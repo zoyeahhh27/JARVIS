@@ -1,0 +1,6 @@
+numpy
+PyAudio
+requests
+SpeechRecognition
+openwakeword
+pytest

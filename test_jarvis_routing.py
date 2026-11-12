@@ -1,17 +1,3 @@
-#!/usr/bin/env python3
-"""
-Mock routing tests for jarvis.py. These need NO Mac, microphone, Chrome or Ollama:
-hardware/OS modules are stubbed and every action function is replaced by a recorder.
-They verify command ROUTING and PARSING only - not real macOS behaviour.
-
-What these tests are and are NOT:
-  * They check command ROUTING, PARSING, generated-AppleScript content, state handling, the UI's event
-    model and the UI's process lifecycle (against a fake engine script).
-  * They do NOT prove that Chrome, YouTube, System Events, screencapture or the microphone behave as
-    expected on a real Mac. Every AppleScript/JavaScript call is mocked. See the manual checklist.
-
-Run:  python test_jarvis_routing.py
-"""
 import sys
 import time
 import types
@@ -998,3 +984,388 @@ class RoutingPriorityTests(unittest.TestCase):
             self.assertNotIn("OLLAMA", [e[0] for e in self.names(text)], text)
 
     def test_mute_the_video_is_not_system_volume_but_plain_mute_is(self):
+        self.assertEqual(self.names("mute the video")[0][:2], ("video", "mute"))
+        self.assertEqual(self.names("mute")[0][0], "volume")
+
+    def test_play_the_first_video_vs_resume_playback(self):
+        self.assertEqual(self.names("play the first video")[0], ("play", 1))
+        self.assertEqual(self.names("resume playback")[0][:2], ("video", "play"))
+        self.assertEqual(self.names("play the video")[0][:2], ("video", "play"))
+
+    def test_compound_open_youtube_and_search(self):
+        events = self.names("Open YouTube and search for love yourself.")
+        self.assertEqual(events, [("search", "love yourself", "site=youtube")])
+
+    def test_compound_with_new_commands(self):
+        events = self.names("minimize chrome and take a screenshot")
+        self.assertEqual([e[0] for e in events], ["window", "screenshot"])
+        events = self.names("open a new tab and switch to tab 2")
+        self.assertEqual([e[0] for e in events], ["new_tab", "tab_switch"])
+        events = self.names("pause the video and mute the video")
+        self.assertEqual([e[:2] for e in events], [("video", "pause"), ("video", "mute")])
+
+    def test_compound_does_not_split_titles_containing_and(self):
+        events = self.names("search youtube for tom and jerry")
+        self.assertEqual(events, [("search", "tom and jerry", "site=youtube")])
+        self.assertEqual(jarvis.split_compound("play black and white"), ["play black and white"])
+
+    def test_failed_step_stops_compound(self):
+        with mock.patch.object(jarvis, "take_screenshot", lambda: False), \
+                mock.patch.object(jarvis, "window_action", lambda *a: self.rec.events.append(("window",)) or True):
+            self.rec.events.clear()
+            jarvis.process_command("take a screenshot and minimize chrome")
+        self.assertNotIn(("window",), self.rec.events)
+
+    def test_invalid_commands(self):
+        # unknown "open X" is reported, never searched or sent to the LLM
+        events = self.names("open flibbertigibbet")
+        self.assertEqual(events, [])
+        said = [e for e in self.rec.events if e[0] == "speak"]
+        self.assertIn("don't have an app", said[-1][1])
+        # nonsense that looks like an action
+        self.rec.events.clear()
+        jarvis.process_command("switch to the moon")
+        self.assertNotIn("OLLAMA", [e[0] for e in self.rec.events])
+
+    def test_empty_and_noise_commands_do_nothing(self):
+        for text in ("", "   ", "...", "jarvis"):
+            self.rec.events.clear()
+            self.assertIsNone(jarvis.process_command(text))
+            self.assertEqual([e for e in self.rec.events if e[0] != "speak"], [], repr(text))
+
+    def test_handlers_never_swallow_each_other(self):
+        # every spec phrase must be claimed by exactly the intended handler
+        expected = {
+            "pause the video": "handle_video", "resume playback": "handle_video",
+            "switch to the next tab": "handle_browser", "go back": "handle_browser",
+            "minimize the current window": "handle_window", "take a screenshot": "handle_screenshot",
+            "set volume to 80 percent": "handle_volume", "open calculator": "handle_app",
+            "search for alfaaz": "handle_generic_search", "play the first video": "handle_youtube",
+        }
+        for text, handler_name in expected.items():
+            claimed = [h.__name__ for h in jarvis.HANDLERS
+                       if self._claims(h, text)]
+            self.assertEqual(claimed[0], handler_name, (text, claimed))
+
+    def _claims(self, handler, text):
+        with mock.patch.object(jarvis, "speak", lambda *_: None), \
+                mock.patch.object(jarvis, "confirm", lambda q: True):
+            patches = [mock.patch.object(jarvis, name, lambda *a, **k: True) for name in (
+                "control_video", "switch_tab", "chrome_navigate", "window_action", "take_screenshot",
+                "control_volume", "open_app", "browser_search", "youtube_play_result", "chrome_new_tab",
+                "chrome_close_tab", "report_current_tab", "switch_to_app", "close_app", "close_current_app")]
+            for p in patches:
+                p.start()
+            try:
+                return handler(text) is not None
+            finally:
+                for p in patches:
+                    p.stop()
+
+
+# ---------------------------------------------------------------------------
+# New: engine -> UI event bridge
+# ---------------------------------------------------------------------------
+class EventBridgeTests(unittest.TestCase):
+    def capture(self, fn):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), mock.patch.object(jarvis, "EVENTS_ENABLED", True), \
+                mock.patch.object(jarvis, "_events_broken", False):
+            fn()
+        events = []
+        for line in buffer.getvalue().splitlines():
+            if line.startswith(jarvis.EVENT_PREFIX):
+                import json
+                events.append(json.loads(line[len(jarvis.EVENT_PREFIX):]))
+        return events
+
+    def test_silent_when_not_launched_by_ui(self):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), mock.patch.object(jarvis, "EVENTS_ENABLED", False):
+            jarvis.emit("state", state="LISTENING")
+        self.assertEqual(buffer.getvalue(), "")
+
+    def test_speak_reports_speaking_then_restores_previous_state(self):
+        jarvis.engine_state = "THINKING"
+        with mock.patch.object(jarvis.subprocess, "run", lambda *a, **k: None):
+            events = self.capture(lambda: jarvis.speak("Hello there"))
+        states = [e["state"] for e in events if e["event"] == "state"]
+        self.assertEqual(states, ["SPEAKING", "THINKING"])
+        self.assertIn({"event": "say", "text": "Hello there"}, events)
+
+    def test_state_restored_even_if_say_fails(self):
+        jarvis.engine_state = "LISTENING"
+
+        def boom(*a, **k):
+            raise OSError("say missing")
+
+        with mock.patch.object(jarvis.subprocess, "run", boom):
+            events = self.capture(lambda: jarvis.speak("x"))
+        self.assertEqual([e["state"] for e in events if e["event"] == "state"][-1], "LISTENING")
+
+    def test_route_event_names_the_handler(self):
+        with mock.patch.object(jarvis, "handle_control", lambda c: None), \
+                mock.patch.object(jarvis, "handle_power", lambda c: None), \
+                mock.patch.object(jarvis, "handle_screenshot", lambda c: True), \
+                mock.patch.object(jarvis, "HANDLERS", (jarvis.handle_control, jarvis.handle_power,
+                                                       jarvis.handle_screenshot)):
+            events = self.capture(lambda: jarvis.route_single("take a screenshot"))
+        self.assertIn({"event": "route", "handler": "<lambda>", "command": "take a screenshot"}, events)
+
+    def test_microphone_level_meter_reports_real_sample_levels(self):
+        import numpy as np
+        loud = (np.ones(1024, dtype=np.int16) * 16384).tobytes()
+
+        class FakeStream:
+            def read(self, size, *args, **kwargs):
+                return loud
+
+        source = types.SimpleNamespace(stream=FakeStream())
+
+        def run():
+            with mock.patch.object(jarvis, "_meter_failed", False):
+                jarvis._attach_level_meter(source)
+                data = source.stream.read(1024)
+                self.assertEqual(data, loud)            # audio passes through untouched
+
+        events = self.capture(run)
+        levels = [e["v"] for e in events if e["event"] == "level"]
+        self.assertEqual(len(levels), 1)
+        self.assertAlmostEqual(levels[0], 0.5, places=2)
+
+    def test_broken_pipe_disables_events_without_crashing(self):
+        with mock.patch.object(jarvis, "EVENTS_ENABLED", True), mock.patch.object(jarvis, "_events_broken", False), \
+                mock.patch("builtins.print", side_effect=BrokenPipeError):
+            jarvis.emit("state", state="STANDBY")          # must not raise
+            self.assertTrue(jarvis._events_broken)
+
+
+# ---------------------------------------------------------------------------
+# New: UI logic and process lifecycle (no window is ever created)
+# ---------------------------------------------------------------------------
+class UIModelTests(unittest.TestCase):
+    def test_parse_engine_line(self):
+        self.assertEqual(jarvis_ui.parse_engine_line('@@JARVIS@@{"event":"ready"}\n'), ("event", {"event": "ready"}))
+        self.assertEqual(jarvis_ui.parse_engine_line("hello\n"), ("text", "hello"))
+        self.assertIsNone(jarvis_ui.parse_engine_line("   \n"))
+        self.assertEqual(jarvis_ui.parse_engine_line("@@JARVIS@@{broken")[0], "text")   # never crashes the UI
+
+    def test_model_follows_real_engine_events(self):
+        m = jarvis_ui.EngineModel()
+        self.assertEqual(m.state, "OFFLINE")
+        m.start()
+        self.assertEqual(m.state, "INITIALIZING")
+        self.assertFalse(m.online)
+        m.apply({"event": "state", "state": "LISTENING"})
+        self.assertEqual(m.state, "INITIALIZING")             # ignored until the engine says it is ready
+        m.apply({"event": "ready"})
+        self.assertEqual((m.state, m.online), ("STANDBY", True))
+        for state in ("LISTENING", "THINKING", "SPEAKING", "STANDBY"):
+            m.apply({"event": "state", "state": state})
+            self.assertEqual(m.state, state)
+        m.apply({"event": "state", "state": "BOGUS"})
+        self.assertEqual(m.state, "STANDBY")
+
+    def test_model_records_commands_and_responses(self):
+        m = jarvis_ui.EngineModel()
+        m.start()
+        m.apply({"event": "ready"})
+        self.assertEqual(m.apply({"event": "heard", "text": "pause the video"}), [("user", "pause the video")])
+        self.assertEqual(m.apply({"event": "say", "text": "Paused the video."}), [("jarvis", "Paused the video.")])
+        self.assertEqual((m.commands, m.last_command, m.last_response),
+                         (1, "pause the video", "Paused the video."))
+        m.apply({"event": "route", "handler": "handle_video", "command": "x"})
+        self.assertEqual(m.last_route, "video")
+
+    def test_level_is_clamped_and_bad_values_ignored(self):
+        m = jarvis_ui.EngineModel()
+        m.apply({"event": "level", "v": 0.05})
+        self.assertAlmostEqual(m.level, 0.3)
+        m.apply({"event": "level", "v": 5})
+        self.assertEqual(m.level, 1.0)
+        m.apply({"event": "level", "v": "nope"})
+        self.assertEqual(m.level, 1.0)
+
+    def test_stop_resets_to_offline(self):
+        m = jarvis_ui.EngineModel()
+        m.start()
+        m.apply({"event": "ready"})
+        m.stop()
+        self.assertEqual((m.state, m.online), ("OFFLINE", False))
+
+    def test_console_line_classification(self):
+        self.assertIsNone(jarvis_ui.classify_console_line("Wake score: 0.0012"))
+        self.assertIsNone(jarvis_ui.classify_console_line("JARVIS: hello"))
+        self.assertEqual(jarvis_ui.classify_console_line("Traceback (most recent call last):")[0], "err")
+        self.assertEqual(jarvis_ui.classify_console_line("Microphone error: x")[0], "err")
+        self.assertEqual(jarvis_ui.classify_console_line("Step 1/2: open calculator")[0], "sys")
+
+    def test_telemetry_parsers(self):
+        vm = ("Mach Virtual Memory Statistics: (page size of 16384 bytes)\n"
+              "Pages free:                               1000.\n"
+              "Pages active:                            50000.\n"
+              "Pages wired down:                        30000.\n"
+              "Pages occupied by compressor:            20000.\n")
+        used = jarvis_ui.parse_vm_stat(vm, 8 * 1024 ** 3)
+        self.assertAlmostEqual(used, 100000 * 16384 * 100 / (8 * 1024 ** 3), places=3)
+        self.assertIsNone(jarvis_ui.parse_vm_stat("garbage", 1))
+        self.assertEqual(jarvis_ui.parse_battery("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t83%; discharging; 5:10 remaining"),
+                         (83, "on battery"))
+        self.assertEqual(jarvis_ui.parse_battery("Now drawing from 'AC Power'\n 100%; charged; 0:00 remaining"),
+                         (100, "plugged in"))
+        self.assertIsNone(jarvis_ui.parse_battery("no battery"))
+
+    def test_colour_mixing_and_bars(self):
+        self.assertEqual(jarvis_ui.mix("#000000", "#ffffff", 0.5), "#808080")
+        self.assertEqual(jarvis_ui.mix("#102030", "#ffffff", 0), "#102030")
+        self.assertEqual(jarvis_ui.mix("#102030", "#ffffff", 5), "#ffffff")      # t is clamped
+        self.assertEqual(jarvis_ui.bar(50, 10), "█████░░░░░")
+        self.assertEqual(jarvis_ui.bar(500, 4), "████")
+
+    def test_all_engine_states_have_a_visual_style(self):
+        for state in jarvis_ui.ENGINE_STATES + ("OFFLINE", "INITIALIZING"):
+            self.assertIn(state, jarvis_ui.STATE_STYLE)
+
+
+FAKE_ENGINE = r"""
+import json, signal, sys, time
+P = "@@JARVIS@@"
+def emit(**d): print(P + json.dumps(d), flush=True)
+mode = sys.argv[1] if len(sys.argv) > 1 else "good"
+if mode == "crash":
+    print("Traceback (most recent call last):", flush=True)
+    print("ModuleNotFoundError: No module named 'pyaudio'", flush=True)
+    sys.exit(1)
+if mode == "stubborn":
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+emit(event="ready")
+emit(event="state", state="STANDBY")
+print("plain console line", flush=True)
+emit(event="heard", text="pause the video")
+emit(event="say", text="Paused the video.")
+try:
+    while True:
+        time.sleep(0.05)
+except KeyboardInterrupt:
+    emit(event="say", text="Goodbye")
+    sys.exit(0)
+"""
+
+
+class EngineProcessTests(unittest.TestCase):
+    """Runs a REAL child process (a fake engine that speaks the same event protocol)."""
+
+    def setUp(self):
+        import os
+        import queue
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.script = os.path.join(self.tmp.name, "fake_engine.py")
+        with open(self.script, "w") as handle:
+            handle.write(FAKE_ENGINE)
+        self.queue = queue.Queue()
+
+    def make(self, mode):
+        engine = jarvis_ui.EngineProcess(self.script, self.queue)
+        engine.GRACE = (0.6, 0.6, 0.6)
+        original = engine.python
+        engine.python = original
+        script_args = [mode]
+
+        real_start = engine.start
+
+        def start_with_mode():
+            import subprocess
+            real_popen = subprocess.Popen
+
+            def popen(cmd, **kw):
+                return real_popen(cmd + script_args, **kw)
+            with mock.patch.object(jarvis_ui.subprocess, "Popen", popen):
+                return real_start()
+
+        engine.start = start_with_mode
+        self.addCleanup(lambda: engine.running and engine.proc.kill())
+        return engine
+
+    def drain_until(self, kind, timeout=8.0):
+        import queue
+        import time
+        items, deadline = [], time.time() + timeout
+        while time.time() < deadline:
+            try:
+                item = self.queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            items.append(item)
+            if item[0] == kind:
+                return items
+        self.fail(f"timed out waiting for {kind!r}; got {items}")
+
+    def test_events_flow_and_graceful_stop(self):
+        engine = self.make("good")
+        self.assertTrue(engine.start())
+        self.assertFalse(engine.start())                     # no double launch
+        items = self.drain_until("event")
+        self.assertEqual(items[-1], ("event", {"event": "ready"}))
+        time.sleep(0.4)
+        self.assertTrue(engine.running)
+        self.assertTrue(engine.request_stop())
+        self.assertFalse(engine.request_stop())              # already stopping
+        items = self.drain_until("exit")
+        self.assertEqual(items[-1], ("exit", 0))             # graceful SIGINT exit, not a kill
+        kinds = [i for i in items if i[0] == "event"]
+        self.assertIn(("event", {"event": "say", "text": "Goodbye"}), kinds)
+        self.assertFalse(engine.running)
+
+    def test_stubborn_engine_is_escalated_and_killed(self):
+        engine = self.make("stubborn")
+        engine.start()
+        self.drain_until("event")
+        engine.request_stop()
+        items = self.drain_until("exit")
+        self.assertIn(items[-1][1], (-15, -9))               # SIGTERM or SIGKILL
+        self.assertTrue(any(i[0] == "text" and "escalating" in i[1] for i in items))
+
+    def test_crash_is_reported_with_output_tail(self):
+        engine = self.make("crash")
+        engine.start()
+        items = self.drain_until("exit")
+        self.assertEqual(items[-1], ("exit", 1))
+        self.assertTrue(any("ModuleNotFoundError" in line for line in engine.tail))
+
+    def test_stop_when_not_running_is_harmless(self):
+        engine = jarvis_ui.EngineProcess(self.script, self.queue)
+        self.assertFalse(engine.request_stop())
+
+    def test_engine_gets_the_events_environment(self):
+        captured = {}
+
+        class FakePopen:
+            def __init__(self, cmd, **kw):
+                captured.update(kw)
+                self.stdout = iter(())
+                self.pid = 1
+                self.returncode = 0
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                return 0
+
+        engine = jarvis_ui.EngineProcess(self.script, self.queue)
+        with mock.patch.object(jarvis_ui.subprocess, "Popen", FakePopen):
+            engine.start()
+        self.assertEqual(captured["env"]["JARVIS_EVENTS"], "1")
+        self.assertEqual(captured["env"]["PYTHONUNBUFFERED"], "1")
+        self.assertTrue(captured["start_new_session"])
+
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=1)

@@ -1,21 +1,3 @@
-#!/usr/bin/env python3
-"""
-JARVIS Desktop UI for macOS - futuristic control panel for jarvis.py.
-
-How it is wired to the real engine
-----------------------------------
-* The UI starts jarvis.py as a child process with JARVIS_EVENTS=1.
-* In that mode the engine prints structured lines ("@@JARVIS@@{json}") describing its REAL state:
-  ready / wake / state (STANDBY, LISTENING, THINKING, SPEAKING) / heard / say / level / route.
-* The UI only reads those lines. It never opens the microphone itself.
-* STANDBY and LISTENING waveforms use the real microphone level reported by the engine.
-  While SPEAKING, the waveform is a decorative animation (macOS `say` output level is not measured);
-  the SPEAKING state itself is real.
-* Nothing blocks Tk's main thread: a reader thread, a telemetry thread and a stop thread
-  talk to the UI through a queue that Tk polls with after().
-
-Only the standard library is used (Tkinter needs a Python build with Tk; see the install notes).
-"""
 import collections
 import json
 import math

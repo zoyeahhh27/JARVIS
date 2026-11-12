@@ -1,33 +1,3 @@
-#!/usr/bin/env python3
-"""
-JARVIS - local voice assistant for macOS (Apple Silicon).
-
-Wake word:  OpenWakeWord ("Hey Jarvis")
-Speech in:  SpeechRecognition + PyAudio
-Speech out: macOS `say`
-LLM:        local Ollama (no paid APIs)
-Automation: AppleScript / `open` / macOS command-line tools
-
-Command routing order (first handler that recognises the command wins):
-    0. Compound splitter ("open X and search Y")  -> runs each part through 1-10
-    1. Jarvis control   (sleep / shutdown / exit)
-    2. System commands  (shut down / restart the Mac - confirmed; screenshots)
-    3. Video controls   (pause / resume / mute the YouTube video - BEFORE volume,
-                         so "mute the video" never mutes the Mac)
-    4. Volume
-    5. Window controls  (minimize / maximize / restore / close window - never quits an app)
-    6. Applications     (open / switch / quit, by bundle identifier)
-    7. Browser          (Chrome tabs, tab switching, back / forward / refresh, websites, Google)
-    8. YouTube          (search, follow-ups, play results)
-       + generic "search X" (after YouTube so "search youtube for X" is not stolen)
-    9. Files and folders
-   10. Utilities        (memory, time, date, weather, battery, calculator, help)
-   11. Planner          (local Ollama, strictly validated, only as a fallback)
-   12. Ollama           (general conversation - plain text only, never executed)
-
-UI: when started by jarvis_ui.py (JARVIS_EVENTS=1) the engine also prints structured
-event lines (state, heard, say, level, route) that the UI reads. Otherwise nothing changes.
-"""
 import ast
 import datetime
 import json
@@ -1703,10 +1673,37 @@ def handle_youtube(cmd):
         if match:
             return browser_search(match.group(1), site="youtube")
 
-    # "play <something>" opens YouTube results (use "play the first one" to start playback).
+    # "play <something>" searches YouTube and immediately attempts first-result playback.
     match = re.match(r"^play\s+(.+)$", cmd)
     if match:
-        return browser_search(match.group(1), site="youtube")
+        query = clean_query(match.group(1))
+        if not browser_search(query, site="youtube", announce=False):
+            return False
+        # Wait for YouTube's results to populate before selecting the first result.
+        results = fetch_youtube_results(expected_query=query, timeout=18.0)
+        if results is None or not results:
+            speak("I found the YouTube search, but couldn't load its video results.")
+            return False
+        session["yt_results"] = results
+        first = results[0]
+        title = first["t"][:90] or "the video"
+        if not chrome_open_url(first["h"]):
+            return False
+        # Try direct video play, then send Space as a user-like playback trigger.
+        def playback_state():
+            ok, out, _ = chrome_js(YT_PLAYING_JS)
+            return out if ok and out == "playing" else None
+        if wait_until(playback_state, timeout=4.0, interval=0.8):
+            speak(f"Playing {title}.")
+            return True
+        ok, _, err = run_osascript('tell application "System Events" to key code 49', timeout=5)
+        if not ok:
+            log(f"YouTube Space-key playback attempt failed: {err}")
+        if wait_until(playback_state, timeout=8.0, interval=0.8):
+            speak(f"Playing {title}.")
+            return True
+        speak(f"I opened {title}, but Chrome blocked automatic playback. Check Chrome and System Events automation permissions.")
+        return False
     if cmd == "play":
         speak("What would you like me to play?")
         return False

@@ -1,115 +1,144 @@
 # JARVIS — Local Voice Assistant for macOS
 
-A local, voice-controlled desktop assistant for macOS with a Tkinter control-panel UI, wake-word activation, speech recognition, local LLM responses through Ollama, and desktop/browser automation.
+<p align="center">
+  <strong>A voice-activated desktop assistant with a futuristic control panel, local AI, and macOS automation.</strong>
+</p>
 
-> **Platform:** macOS (Apple Silicon tested). This project uses macOS utilities such as `say`, `osascript`, `open`, `pmset`, and `screencapture`; it is not currently a cross-platform assistant.
+<p align="center">
+  <a href="https://github.com/zoyeahhh27/JARVIS"><img src="https://img.shields.io/badge/platform-macOS-111111?logo=apple&logoColor=white" alt="macOS"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+"></a>
+  <a href="https://ollama.com/"><img src="https://img.shields.io/badge/AI-Ollama-000000?logo=ollama&logoColor=white" alt="Ollama"></a>
+  <img src="https://img.shields.io/badge/UI-Tkinter-2C3E50" alt="Tkinter">
+</p>
 
-## Features
+JARVIS is a personal voice-controlled assistant for macOS. It listens for the **“Hey Jarvis”** wake word, recognizes spoken commands, uses a local language model through Ollama for conversational responses and command planning, and can perform desktop/browser actions. A Tkinter dashboard provides a visual interface for assistant state, recognized speech, responses, and microphone telemetry.
 
-- Wake-word activation with OpenWakeWord (`Hey Jarvis`).
-- Speech input using SpeechRecognition and PyAudio.
-- Speech output using the built-in macOS `say` command.
-- Local conversational responses and command planning through Ollama (`llama3.2:3b` by default).
-- Desktop and browser actions using AppleScript and macOS command-line utilities.
-- Tkinter dashboard showing assistant state, recognized speech, responses, and microphone telemetry.
-- Session-only conversational and browser context.
+> **Platform note:** Developed and tested on macOS (Apple Silicon). It uses macOS utilities such as `say`, `osascript`, `open`, `pmset`, and `screencapture`; it is not currently cross-platform.
 
-## Requirements
+## Demo
 
-- macOS with Python 3.10+ (use a Python installation that includes Tkinter).
-- Homebrew is recommended for installing native dependencies.
-- Ollama installed and running locally.
-- A working microphone and macOS permissions for Microphone and Accessibility / Automation where requested.
+A screen-recorded walkthrough is planned. It will demonstrate wake-word activation, voice commands, local Ollama responses, and the dashboard.
 
-## Setup
+## Highlights
 
-1. Install [Homebrew](https://brew.sh/) if it is not already installed.
-2. Install PortAudio and Ollama:
+- **Wake-word activation** using OpenWakeWord (“Hey Jarvis”).
+- **Speech recognition** through SpeechRecognition and PyAudio.
+- **Voice responses** using macOS built-in `say`.
+- **Local AI** using Ollama (default model: `llama3.2:3b`).
+- **Desktop and browser automation** with AppleScript and macOS command-line utilities.
+- **Live dashboard** built with Tkinter, displaying assistant state, recognized speech, responses, and microphone telemetry.
+- **Session context** for conversational and browser context.
 
-   ```bash
-   brew install portaudio ollama
-   ```
+## Tech stack
 
-3. Start Ollama and download the configured model:
+| Area | Tools |
+|---|---|
+| Language | Python |
+| Desktop UI | Tkinter |
+| Wake word | OpenWakeWord |
+| Speech input | SpeechRecognition, PyAudio |
+| Speech output | macOS `say` |
+| Local AI | Ollama, `llama3.2:3b` |
+| Automation | AppleScript, `osascript`, macOS CLI |
 
-   ```bash
-   ollama serve
-   ```
+## Getting started
 
-   In another Terminal window:
+### Prerequisites
 
-   ```bash
-   ollama pull llama3.2:3b
-   ```
+- macOS and Python 3.10+ (Python installation with Tkinter).
+- [Homebrew](https://brew.sh/)
+- [Ollama](https://ollama.com/) installed and running.
+- A working microphone.
+- macOS Microphone and, for applicable automation, Accessibility / Automation permissions.
 
-4. Clone this repository and enter the project directory:
+### 1. Install native dependencies
 
-   ```bash
-   git clone https://github.com/zoyeahhh27/JARVIS.git
-   cd JARVIS
-   ```
+```bash
+brew install portaudio ollama
+```
 
-5. Create and activate a virtual environment:
+### 2. Start Ollama and pull the model
 
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   python -m pip install --upgrade pip
-   ```
+In one Terminal window:
 
-6. Install Python dependencies:
+```bash
+ollama serve
+```
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+In another:
 
-7. Download OpenWakeWord's pre-trained models:
+```bash
+ollama pull llama3.2:3b
+```
 
-   ```bash
-   python -c "import openwakeword; openwakeword.utils.download_models()"
-   ```
+### 3. Clone the repository
 
-## Run
+```bash
+git clone https://github.com/zoyeahhh27/JARVIS.git
+cd JARVIS
+```
 
-Keep Ollama running, then launch the dashboard:
+### 4. Create a virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+```
+
+### 5. Install Python packages
+
+```bash
+pip install -r requirements.txt
+```
+
+### 6. Download OpenWakeWord models
+
+```bash
+python -c "import openwakeword; openwakeword.utils.download_models()"
+```
+
+## Launch
+
+Keep Ollama running, then start the dashboard:
 
 ```bash
 python jarvis_ui.py
 ```
 
-The dashboard starts `jarvis.py` as a child process. You can also run the voice engine without the dashboard:
+The dashboard launches `jarvis.py` as a child process. To run the voice engine without the dashboard:
 
 ```bash
 python jarvis.py
 ```
 
-Say **“Hey Jarvis”** to activate the assistant, then give a command.
+Say **“Hey Jarvis”** to wake the assistant, then speak a command.
 
 ## macOS permissions
 
-The first time you use relevant features, macOS may ask for permission. Review **System Settings → Privacy & Security** and allow microphone access and the required Accessibility / Automation permissions for the terminal or app that launches Python. Only grant permissions you are comfortable with.
+When prompted, review **System Settings → Privacy & Security** and grant Microphone and required Accessibility / Automation permissions to the terminal or app running Python. Grant only permissions you are comfortable with.
 
 ## Tests
 
-Run the routing and UI helper tests with:
+Run the project tests:
 
 ```bash
 pytest -q
 ```
 
-Hardware-dependent behavior (microphone, wake-word detection, macOS automation, and Ollama responses) still needs to be tested on the target Mac.
+The routing test suite has passed in the project development environment. Hardware-dependent behavior—microphone input, wake-word detection, macOS automation, and Ollama responses—must still be verified on the target Mac.
 
 ## Configuration
 
-The default local model is `llama3.2:3b`, served through Ollama at `http://localhost:11434`. The configured microphone device index and wake-word thresholds are set near the top of `jarvis.py` and may need adjustment for a different Mac or microphone.
+The default model is `llama3.2:3b`, served by Ollama at `http://localhost:11434`. Microphone device index and wake-word thresholds are configured near the top of `jarvis.py`; they may require adjustment for another Mac or microphone.
 
-## Safety and privacy
+## Privacy and safety
 
-- Ollama conversation and planning requests are sent to the local Ollama service by default.
+- Conversational and planning requests are sent to the local Ollama service by default.
 - The weather utility uses the Open-Meteo public API.
-- Desktop automation can open applications, interact with browser tabs, manage windows, and perform system actions. Review commands before using them, and be especially careful with shutdown/restart or other system-level actions.
-- Do not commit `.env` files, API keys, credentials, personal recordings, local model files, virtual environments, or machine-specific logs.
+- Desktop automation may open apps, interact with browser tabs, manage windows, or perform system actions. Be mindful with shutdown, restart, and other system-level commands.
+- Never commit API keys, credentials, `.env` files, personal recordings, local model files, virtual environments, or machine-specific logs.
 
 ## License
 
-No license has been specified yet. Add a license file before accepting external contributions or defining reuse permissions.
+No license has been specified yet. Add a license before accepting external contributions or explicitly defining reuse permissions.
